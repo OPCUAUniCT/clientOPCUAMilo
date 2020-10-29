@@ -6,8 +6,10 @@ import java.net.InetAddress;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.function.BiConsumer;
 import java.util.regex.Pattern;
 
 import org.eclipse.milo.opcua.sdk.client.AddressSpace;
@@ -15,6 +17,8 @@ import org.eclipse.milo.opcua.sdk.client.AddressSpace.BrowseOptions;
 import org.eclipse.milo.opcua.sdk.client.OpcUaClient;
 import org.eclipse.milo.opcua.sdk.client.api.config.OpcUaClientConfig;
 import org.eclipse.milo.opcua.sdk.client.api.config.OpcUaClientConfigBuilder;
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaMonitoredItem;
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaNode;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaVariableNode;
 import org.eclipse.milo.opcua.sdk.client.subscriptions.ManagedDataItem;
@@ -28,10 +32,19 @@ import org.eclipse.milo.opcua.stack.core.types.builtin.DataValue;
 import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
 import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
 import org.eclipse.milo.opcua.stack.core.types.builtin.QualifiedName;
+import org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.UByte;
 import org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.UInteger;
 import org.eclipse.milo.opcua.stack.core.types.enumerated.BrowseDirection;
+import org.eclipse.milo.opcua.stack.core.types.enumerated.MonitoringMode;
+import org.eclipse.milo.opcua.stack.core.types.enumerated.TimestampsToReturn;
 import org.eclipse.milo.opcua.stack.core.types.structured.EndpointDescription;
+import org.eclipse.milo.opcua.stack.core.types.structured.MonitoredItemCreateRequest;
+import org.eclipse.milo.opcua.stack.core.types.structured.MonitoringParameters;
 import org.eclipse.milo.opcua.stack.core.types.structured.ReadValueId;
+
+import com.google.common.collect.Lists;
+
+import static org.eclipse.milo.opcua.stack.core.types.builtin.unsigned.Unsigned.uint;
 
 public class App 
 {
@@ -303,7 +316,7 @@ public class App
 			nodeId = new NodeId(ns, identifier);
 		}
 		
-		ReadValueId redValueId = new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
+		ReadValueId readValueId = new ReadValueId(nodeId, AttributeId.Value.uid(), null, QualifiedName.NULL_VALUE);
 		
 		System.out.println("Inserire il sampling Interval [DEFAULT: 1000]:");
 		try {
@@ -313,7 +326,7 @@ public class App
 		}
 		
 		/* Una volta creato il MonitoredItem inizia a funzionare */
-		ManagedDataItem dataItem = subscription.createDataItem(samplingInterval, redValueId);
+		ManagedDataItem dataItem = subscription.createDataItem(samplingInterval, readValueId);
 		
 		/* Controllare sempre lo StatusCode quando si crea o si modifica un MonitoredItem! */
 		if (!dataItem.getStatusCode().isGood()) {
@@ -321,8 +334,77 @@ public class App
 		}
 		
 		Thread.sleep(5000);
-		System.out.println("\nEsercizio completato. Cancello sottoscrizione e chiudo la sessione.");
+		System.out.println("\nCancello sottoscrizione e ne creo un'altra usando l'API di basso livello.");
 		subscription.delete();
+		
+		/* Creazione di una Subscription con una API di basso livello */
+		UInteger requestedMaxKeepAliveCount = UInteger.valueOf(5);
+		UInteger requestedLifetimeCount = UInteger.valueOf( 3 * requestedMaxKeepAliveCount.intValue());
+		UInteger maxNotificationsPerPublish = UInteger.valueOf(3);
+		boolean publishingEnabled = true;
+		UByte priority = UByte.valueOf(0);
+		
+		UaSubscription subscription2 = client.getSubscriptionManager()
+											.createSubscription(requestedPublishingInterval, 
+																requestedLifetimeCount, 
+																requestedMaxKeepAliveCount, 
+																maxNotificationsPerPublish, 
+																publishingEnabled, 
+																priority)
+											.get();
+		
+		// IMPORTANT: client handle deve essere unico per item nel contesto di una subscription.
+        // Non è richiesto l'uso della sequenza di client handle fornita da un oggetto UsSubscription. Viene usato qui per comodità.
+        // La tua applicazione è libera di assegnare client handles da una qualsiasi fonte. Purchè chiaramente sia univoca nella Subscription.
+		UInteger clientHandle = subscription2.nextClientHandle();
+		
+		//Creiamo un oggetto contenente i parametri per la richiesta di creazione di un MonitoredItem
+		MonitoringParameters parameters = new MonitoringParameters(
+										            clientHandle,
+										            250.0,     // sampling interval
+										            null,       // filter, null means use default
+										            uint(2),   // queue size   <--- uint() è stato importato come metodo statico. Un alternativa a UInt.valueOf()
+										            true        // discard oldest
+										        );
+		
+		 //Creiamo la richiesta di creazione di un MonitoredItem
+		 MonitoredItemCreateRequest request = new MonitoredItemCreateRequest(
+		            readValueId,
+		            MonitoringMode.Reporting,
+		            parameters
+		        );
+		
+		 // Adesso dobbiamo creare una callback che verrà chiamata al momento della creazione dell'item
+		 // Questa callback servirà per effettuare operazioni non appena l'item viene creato e SOPRATTUTTO
+		 // per registrare la callback consumer dei valori ricevuti dai NotificationMessage.
+		 BiConsumer<UaMonitoredItem, Integer> onItemCreated =
+		            (item, id) -> item.setValueConsumer((mi, value) -> {
+		            	UInteger subId = subscription2.getSubscriptionId();
+		            	// Notare come con questa API non abbiamo accesso al NodeId del nodo di cui stimao ricevendo il dato.
+		            	// Questo perchè essendo di basso livello l'associazione NodeId-ClientHandle deve essere mantenuta dallo sviluppatore.
+		            	// Anche per la SubscriptionId doibbiamo gestirla noi. Qui riusciamo a stamparla perchè facciamo una closure sulla variabile
+		            	// subscription2 la quale è esterna alla definizione della funzione.
+						System.out.println("SubscriptionId: " + subId + " - ClientHandle: " + mi.getClientHandle() + " - Value: " + value.getValue().getValue() + " - SourceTimestamp: " + value.getSourceTime());
+		            });
+		            
+		// Creo effettivamente il monitored item
+        List<UaMonitoredItem> items = subscription2.createMonitoredItems(
+										                TimestampsToReturn.Both,
+										                Lists.newArrayList(request),
+										                onItemCreated)
+										        	.get();
+        
+        for(UaMonitoredItem item: items) {
+        	if (!item.getStatusCode().isGood()) {
+    		    throw new RuntimeException("Errore nella creazione del MonitoredItem!");
+    		}
+        }
+        
+        Thread.sleep(5000);
+        client.getSubscriptionManager()
+        		.deleteSubscription(subscription2.getSubscriptionId());
+        System.out.println("\nCancello sottoscrizione e disconneto il Client. Esempio OPC UA Client finito!");
+        
 		client.disconnect();
 		System.exit(0);
     }
