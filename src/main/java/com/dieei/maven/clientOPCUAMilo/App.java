@@ -19,6 +19,7 @@ import org.eclipse.milo.opcua.sdk.client.api.config.OpcUaClientConfig;
 import org.eclipse.milo.opcua.sdk.client.api.config.OpcUaClientConfigBuilder;
 import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaMonitoredItem;
 import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription;
+import org.eclipse.milo.opcua.sdk.client.api.subscriptions.UaSubscription.NotificationListener;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaNode;
 import org.eclipse.milo.opcua.sdk.client.nodes.UaVariableNode;
 import org.eclipse.milo.opcua.sdk.client.subscriptions.ManagedDataItem;
@@ -29,6 +30,7 @@ import org.eclipse.milo.opcua.stack.core.AttributeId;
 import org.eclipse.milo.opcua.stack.core.BuiltinReferenceType;
 import org.eclipse.milo.opcua.stack.core.Identifiers;
 import org.eclipse.milo.opcua.stack.core.types.builtin.DataValue;
+import org.eclipse.milo.opcua.stack.core.types.builtin.DateTime;
 import org.eclipse.milo.opcua.stack.core.types.builtin.LocalizedText;
 import org.eclipse.milo.opcua.stack.core.types.builtin.NodeId;
 import org.eclipse.milo.opcua.stack.core.types.builtin.QualifiedName;
@@ -404,6 +406,23 @@ public class App
         client.getSubscriptionManager()
         		.deleteSubscription(subscription2.getSubscriptionId());
         System.out.println("\nCancello sottoscrizione e disconneto il Client. Esempio OPC UA Client finito!");
+        
+        /* Un'alternativa alle callback delle precedenti API è quella di settare una callback sulla subscription stessa
+         * per gestire l'arrivo di eventuali DataChangeNotification. 
+         * 
+         * 	subscription2.addNotificationListener(new UaSubscription.NotificationListener() {
+	        	@Override
+	        	public void onDataChangeNotification(UaSubscription subscription, List<UaMonitoredItem> monitoredItems,	List<DataValue> dataValues, DateTime publishTime) {
+	        		// Qui posso gestire tutte le norification. Notare come con questo metodo ho accesso alla subscription associata.
+	        	}
+			});
+			
+			NOTATE BENE le differenze fra le due API: nella precedente io gestisco una callback sul singolo monitored Item.
+			In questa API invece creo una callback per gestire allo stesso modo tutti i valori ricevuti dai MonitoredItem
+			indipendente da chi essi siano.
+			Ovviamente nulla vieta di usarle entrambe contemporaneamente. La prima nel caso volessi fare qualcosa di specifico per un monitored item, 
+			la seconda per fare delle operazioni comuni a tutti i monitored item della subscription.
+         * */
         
 		client.disconnect();
 		System.exit(0);
